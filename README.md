@@ -166,13 +166,19 @@ tree, and reproducing them byte for byte from `firmware/` is not scripted yet.
   lines, reproducible). The released driver is
   `build-ufs.ps1 -SourceDir drivers\Exynos9810Ufs -OutDir <new folder> -WideUncached -DmaWindow`,
   which reproduces it byte for byte (unsigned SHA-256
-  `a80b222939e7ec81522221740de5346b9799ff68492a875d996fdf947138eaa7`).
+  `1346ce2c2e1cd08624ecb4b09a8418c071e0a5ec9b2f976ebfa34bd3702dc029` for this fork's
+  0.2.0 driver with 128/256 GB support; upstream's 64 GB-only 0.1.0 driver was
+  `a80b222939e7ec81522221740de5346b9799ff68492a875d996fdf947138eaa7`). Package it
+  with `Exynos9810Ufs.inf`, `Inf2Cat /os:10_VB_ARM64` and a test signature on the
+  `.sys` and `.cat`.
 - **HSI2C**: `msbuild drivers\Exynos9810Hsi2c\Exynos9810Hsi2c.vcxproj /p:Configuration=Release /p:Platform=ARM64`
   (needs the WDK's Visual Studio integration); see its README.
 - **Touch**: `drivers/S6SY761Touch/README.md`.
 
 All three are test-signed, so Windows runs them with test signing on, which the
-installer enables in the image it builds.
+installer enables in the image it builds. In this fork's releases the UFS driver
+is signed with the fork's own test certificate (`CN=S9 WoA Test Signing (S-wave
+fork)`); HSI2C and touch are upstream 0.1.0's builds, signed with upstream's.
 
 ## Safety
 

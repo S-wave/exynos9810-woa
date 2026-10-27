@@ -16,13 +16,15 @@
 
   Then pass the files to make-payload.ps1 -Assets. Needs PowerShell 7 (pwsh) and the .NET 8 SDK.
 
-.PARAMETER Twrp     The official twrp-3.7.0_9-0-star2lte.img (from twrp.me).
+.PARAMETER Twrp     The official twrp-3.7.0_9-0-star2lte.img (from twrp.me). Optional: without it
+                  only the installer zips are built, for a release that republishes an
+                  existing star2lte-winre-recovery.img.
 .PARAMETER Version  Installer version, e.g. 0.1.0.
 .PARAMETER OutDir   Output folder (created; must be empty or absent).
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)] [string]$Twrp,
+  [string]$Twrp,
   [Parameter(Mandatory)] [string]$Version,
   [Parameter(Mandatory)] [string]$OutDir
 )
@@ -42,7 +44,7 @@ Galaxy S9+ Windows Installer $Version
 ==================================
 
 Installs Windows 11 (ARM64) on a Samsung Galaxy S9+ SM-G965F (Exynos 9810), from
-stock Android to the Windows desktop.
+stock Android to the Windows desktop. 64, 128 and 256 GB phones are supported.
 
 Run S9WoaInstaller.exe (it asks for administrator rights: DISM and the disk tools
 need them). Needs Windows 10 2004 or newer on an x64 or ARM64 PC, about 80 GB of
@@ -66,7 +68,7 @@ are Microsoft's and are redistributed under their own terms (licenses\). By
 using this package you agree to those terms, including the Windows App SDK
 license terms in licenses\WindowsAppSDK-license.txt.
 
-Source: https://github.com/ntdevlabs/exynos9810-woa
+Source: https://github.com/S-wave/exynos9810-woa
 "@
 
 try {
@@ -99,6 +101,8 @@ try {
     [IO.Compression.ZipFile]::CreateFromDirectory((Split-Path $stage), $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
     Write-Output "$zip"
   }
+
+  if (-not $Twrp) { return }
 
   # The recovery, built by the installer's own engine from the x64 publish. A child process loads
   # it, so the engine is unloaded again and the temporary folder can be removed.

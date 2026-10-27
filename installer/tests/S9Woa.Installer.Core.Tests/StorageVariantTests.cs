@@ -80,3 +80,34 @@ public class StorageVariantTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => twrp.PartitionExtentAsync("USERDATA"));
     }
 }
+
+public class ReleaseRepoMigrationTests
+{
+    [Fact]
+    public void ASchemaOneConfigOnTheUpstreamDefaultMovesToThisFork()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "s9woa-cfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "toolset.json"),
+                "{ \"SchemaVersion\": 1, \"SetupCompleted\": true, \"ReleaseRepo\": \"ntdevlabs/exynos9810-woa\" }");
+            var config = Toolset.ToolsetConfig.Load(dir);
+            Assert.Equal(Toolset.ToolsetConfig.DefaultReleaseRepo, config.ReleaseRepo);
+            Assert.Equal(Toolset.ToolsetConfig.CurrentSchemaVersion, config.SchemaVersion);
+            Assert.True(config.SetupCompleted);
+
+            File.WriteAllText(Path.Combine(dir, "toolset.json"),
+                "{ \"SchemaVersion\": 1, \"ReleaseRepo\": \"someone/their-mirror\" }");
+            Assert.Equal("someone/their-mirror", Toolset.ToolsetConfig.Load(dir).ReleaseRepo);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ANewConfigUsesThisFork() =>
+        Assert.Equal("S-wave/exynos9810-woa", new Toolset.ToolsetConfig().ReleaseRepo);
+}

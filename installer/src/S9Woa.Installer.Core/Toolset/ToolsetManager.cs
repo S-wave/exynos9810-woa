@@ -12,9 +12,17 @@ public sealed class ToolsetConfig
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
-    public int SchemaVersion { get; set; } = 1;
+    /// <summary>Where the firmware and drivers come from: this fork, whose UFS driver supports 128/256 GB phones.</summary>
+    public const string DefaultReleaseRepo = "S-wave/exynos9810-woa";
+
+    /// <summary>The upstream repository schema-1 configs defaulted to; its drivers only support the 64 GB phone.</summary>
+    internal const string UpstreamReleaseRepo = "ntdevlabs/exynos9810-woa";
+
+    public const int CurrentSchemaVersion = 2;
+
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public bool SetupCompleted { get; set; }
-    public string ReleaseRepo { get; set; } = "ntdevlabs/exynos9810-woa";
+    public string ReleaseRepo { get; set; } = DefaultReleaseRepo;
     public string? BuildFolder { get; set; }
 
     /// <summary>User-chosen program paths that take precedence over detection, by tool id.</summary>
@@ -26,13 +34,28 @@ public sealed class ToolsetConfig
         try
         {
             return File.Exists(path)
-                ? JsonSerializer.Deserialize<ToolsetConfig>(File.ReadAllText(path), Json) ?? new ToolsetConfig()
+                ? Migrate(JsonSerializer.Deserialize<ToolsetConfig>(File.ReadAllText(path), Json) ?? new ToolsetConfig())
                 : new ToolsetConfig();
         }
         catch (JsonException)
         {
             return new ToolsetConfig();
         }
+    }
+
+    /// <summary>
+    /// Schema 1 saved the upstream release as its default, so a config written by an earlier
+    /// installer would keep downloading drivers that refuse 128/256 GB phones. Move it to this
+    /// fork's release; a repository the user typed in themselves is left alone.
+    /// </summary>
+    internal static ToolsetConfig Migrate(ToolsetConfig config)
+    {
+        if (config.SchemaVersion < 2 && string.Equals(config.ReleaseRepo, UpstreamReleaseRepo, StringComparison.OrdinalIgnoreCase))
+        {
+            config.ReleaseRepo = DefaultReleaseRepo;
+        }
+        config.SchemaVersion = CurrentSchemaVersion;
+        return config;
     }
 
     public void Save(string dataDirectory)
