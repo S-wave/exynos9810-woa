@@ -921,7 +921,51 @@ C_ASSERT(UFS_WDT_WTCNT < UFS_WDT_WINDOW);
  * Windows already owns.
  */
 #define UFS_WRITE_FENCE_FIRST_LBA            68736ULL
-#define UFS_WRITE_FENCE_LAST_LBA             15615994ULL
+
+/*
+ * STORAGE VARIANTS - 64, 128 and 256 GB.
+ *
+ * The S9+ shipped with three UFS sizes flashed from one PIT. The PIT fixes
+ * every partition up to and including sda24 CP_DEBUG, so those LBAs (and every
+ * constant above and below that names them) are identical on all three units.
+ * Only sda25 USERDATA, always the last partition, grows with the unit, and the
+ * tail and the backup GPT move up behind it. So only the top of the disk is
+ * taken from the capacity the device reports:
+ *
+ *   backup GPT   LastLogicalBlock - 4 .. LastLogicalBlock
+ *                (header + 4 blocks of 128 x 128-byte entries at 4 KB)
+ *   fence top    LastLogicalBlock - 5, the GPT's LastUsableLBA
+ *
+ * The reported capacity is not trusted blindly. The 64 GB unit is still pinned
+ * to its exact measured value, and the two larger units must land inside a
+ * narrow band around their nominal size, so a corrupt reply cannot move the
+ * GPT guard past the real end of the disk by more than a band's slack - and the
+ * device itself refuses LBAs past its end.
+ *
+ * UFS_WRITE_FENCE_LAST_LBA and UFS_GPT_BACKUP_FIRST_LBA remain the 64 GB
+ * reference values. The 64 GB unit is the smallest, so every compile-time check
+ * stated against them holds on the larger units too: a range that ends below
+ * the 64 GB fence ends below every fence. Runtime checks use the _FOR() forms
+ * on the adapter's validated LastLogicalBlock.
+ */
+#define UFS_REFERENCE_LAST_LOGICAL_BLOCK     15615999ULL   /* 64 GB, measured */
+#define UFS_128GB_MIN_LAST_LOGICAL_BLOCK     30000000ULL   /* ~122.9 GB */
+#define UFS_128GB_MAX_LAST_LOGICAL_BLOCK     31300000ULL   /* ~128.2 GB */
+#define UFS_256GB_MIN_LAST_LOGICAL_BLOCK     60000000ULL   /* ~245.8 GB */
+#define UFS_256GB_MAX_LAST_LOGICAL_BLOCK     62600000ULL   /* ~256.4 GB */
+#define UFS_GPT_BACKUP_BLOCKS                5ULL
+
+#define UFS_GPT_BACKUP_FIRST_LBA_FOR(Last)   ((Last) - (UFS_GPT_BACKUP_BLOCKS - 1ULL))
+#define UFS_WRITE_FENCE_LAST_LBA_FOR(Last)   ((Last) - UFS_GPT_BACKUP_BLOCKS)
+
+#define UFS_WRITE_FENCE_LAST_LBA \
+    UFS_WRITE_FENCE_LAST_LBA_FOR(UFS_REFERENCE_LAST_LOGICAL_BLOCK)
+
+C_ASSERT(UFS_WRITE_FENCE_LAST_LBA == 15615994ULL);
+/* READ CAPACITY(10) carries the last LBA in 32 bits. */
+C_ASSERT(UFS_256GB_MAX_LAST_LOGICAL_BLOCK < 0xFFFFFFFFULL);
+C_ASSERT(UFS_REFERENCE_LAST_LOGICAL_BLOCK < UFS_128GB_MIN_LAST_LOGICAL_BLOCK);
+C_ASSERT(UFS_128GB_MAX_LAST_LOGICAL_BLOCK < UFS_256GB_MIN_LAST_LOGICAL_BLOCK);
 
 /*
  * PROTECTED PARTITIONS - sda19 VENDOR through sda25 USERDATA inclusive.
@@ -1087,12 +1131,14 @@ C_ASSERT(UFS_PROTECTED_PARTITION2_LAST_LBA < UFS_WRITE_FENCE_LAST_LBA);
 /*
  * Independent of the fence, so a mis-set fence constant still cannot destroy
  * the partition table. LastLba comes from the device's own GPT header, read by
- * this driver at LBA 1: BackupLBA 15615999, LastUsableLBA 15615994.
+ * this driver at LBA 1: BackupLBA 15615999, LastUsableLBA 15615994 on the
+ * 64 GB unit. Larger units use UFS_GPT_BACKUP_FIRST_LBA_FOR() at runtime.
  */
 #define UFS_GPT_PRIMARY_LAST_LBA             5ULL
-#define UFS_GPT_BACKUP_FIRST_LBA             15615995ULL
-#define UFS_EXPECTED_LAST_LOGICAL_BLOCK       15615999ULL
-C_ASSERT(UFS_EXPECTED_LAST_LOGICAL_BLOCK == (UFS_GPT_BACKUP_FIRST_LBA + 4ULL));
+#define UFS_GPT_BACKUP_FIRST_LBA \
+    UFS_GPT_BACKUP_FIRST_LBA_FOR(UFS_REFERENCE_LAST_LOGICAL_BLOCK)
+C_ASSERT(UFS_GPT_BACKUP_FIRST_LBA == 15615995ULL);
+C_ASSERT(UFS_REFERENCE_LAST_LOGICAL_BLOCK == (UFS_GPT_BACKUP_FIRST_LBA + 4ULL));
 
 /*
  * One command may never span more than the bounce buffer, which also caps how

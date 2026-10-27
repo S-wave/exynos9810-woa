@@ -3,7 +3,7 @@ Signature="$WINDOWS NT$"
 Class=SCSIAdapter
 ClassGuid={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Provider=%ProviderName%
-DriverVer=07/28/2026,9.0.0.0
+DriverVer=10/28/2026,9.0.0.2
 CatalogFile=Exynos9810Ufs.cat
 PnpLockdown=1
 
@@ -20,13 +20,13 @@ ExcludeFromSelect=*
 CopyFiles=DriverCopy
 
 [Exynos9810Ufs_Install.NT.Services]
-AddService=Exynos9810Ufs,%SPSVCINST_ASSOCSERVICE%,Exynos9810Ufs_Service,Miniport_EventLog
+AddService=Exynos9810Ufs,0x00000002,Exynos9810Ufs_Service,Miniport_EventLog
 
 [Exynos9810Ufs_Service]
 DisplayName=%ServiceDesc%
-ServiceType=%SERVICE_KERNEL_DRIVER%
-StartType=%SERVICE_BOOT_START%
-ErrorControl=%SERVICE_ERROR_NORMAL%
+ServiceType=1
+StartType=0
+ErrorControl=1
 ServiceBinary=%13%\Exynos9810Ufs.sys
 LoadOrderGroup=SCSI Miniport
 AddReg=BusTypeScsi
@@ -45,24 +45,18 @@ DefaultDestDir=13
 DriverCopy=13
 
 [BusTypeScsi]
-HKR,"Parameters","BusType",%REG_DWORD%,1
+HKR,"Parameters","BusType",0x00010001,1
 
 [Miniport_EventLog]
 AddReg=Miniport_EventLog_AddReg
 
 [Miniport_EventLog_AddReg]
-HKR,,EventMessageFile,%REG_EXPAND_SZ%,"%%SystemRoot%%\System32\IoLogMsg.dll"
-HKR,,TypesSupported,%REG_DWORD%,7
+HKR,,EventMessageFile,0x00020000,"%%SystemRoot%%\System32\IoLogMsg.dll"
+HKR,,TypesSupported,0x00010001,7
 
 [Strings]
 ProviderName="Galaxy S9+ Windows Project"
 ManufacturerName="Samsung Electronics"
-DeviceDesc="Samsung Exynos9810 UFS Host Controller (Read-Only)"
-ServiceDesc="Samsung Exynos9810 UFS Read-Only Storport Miniport"
-DiskDesc="Samsung Exynos9810 UFS Driver Installation Disk"
-SPSVCINST_ASSOCSERVICE=0x00000002
-SERVICE_KERNEL_DRIVER=1
-SERVICE_BOOT_START=0
-SERVICE_ERROR_NORMAL=1
-REG_EXPAND_SZ=0x00020000
-REG_DWORD=0x00010001
+DeviceDesc="Samsung Exynos9810 UFS Host Controller"
+ServiceDesc="Samsung Exynos9810 UFS Storport Miniport"
+DiskDesc="Exynos9810 UFS one-shot clean recovery package"

@@ -188,6 +188,23 @@ public sealed partial class TwrpClient
         return r.StdOut.StartsWith("FAT32", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Where a partition sits: its start and size and the size of the UFS unit holding it, all in
+    /// bytes. sysfs reports 512-byte units whatever the logical block size.
+    /// </summary>
+    public async Task<(long StartBytes, long SizeBytes, long DiskBytes)> PartitionExtentAsync(string name, CancellationToken ct = default)
+    {
+        var text = await ShellCheckedAsync(
+            $"n=$(basename $(readlink -f {ByName}/{name})) && cat /sys/class/block/$n/start /sys/class/block/$n/size /sys/class/block/$n/../size",
+            Quick, ct).ConfigureAwait(false);
+        var v = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (v.Length != 3 || !long.TryParse(v[0], out var start) || !long.TryParse(v[1], out var size) || !long.TryParse(v[2], out var disk))
+        {
+            throw new InvalidOperationException($"Could not read where partition {name} sits: {text.Trim()}");
+        }
+        return (start * 512, size * 512, disk * 512);
+    }
+
     public async Task<long> PartitionSizeAsync(string name, CancellationToken ct = default)
     {
         var text = (await ShellCheckedAsync($"blockdev --getsize64 {ByName}/{name}", Quick, ct).ConfigureAwait(false)).Trim();

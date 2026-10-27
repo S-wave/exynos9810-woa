@@ -639,16 +639,21 @@ public sealed partial class InstallPage : Page, IWizardStep
         {
             return (false, $"The phone did not expose the expected partition(s): {string.Join(", ", missing)}.");
         }
-        foreach (var (name, expected) in new[] { (PartitionMap.WindowsTarget, PartitionMap.WindowsBytes), (PartitionMap.EfiSystemPartition, PartitionMap.CacheBytes) })
+        var cache = parts.Keys.First(k => k.Equals(PartitionMap.EfiSystemPartition, StringComparison.OrdinalIgnoreCase));
+        var cacheSize = await twrp.PartitionSizeAsync(cache, ct);
+        if (cacheSize != PartitionMap.CacheBytes)
         {
-            var actual = parts.Keys.First(k => k.Equals(name, StringComparison.OrdinalIgnoreCase));
-            var size = await twrp.PartitionSizeAsync(actual, ct);
-            if (size != expected)
-            {
-                return (false, $"{actual} is {size:N0} bytes, not the validated {expected:N0}. This phone's layout differs; stopping before any write.");
-            }
+            return (false, $"{cache} is {cacheSize:N0} bytes, not the validated {PartitionMap.CacheBytes:N0}. This phone's layout differs; stopping before any write.");
         }
-        return (true, $"Partitions verified: USERDATA ({PartitionMap.WindowsBytes >> 20} MiB) and the CACHE boot partition match the validated layout.");
+        // USERDATA grows with the storage size (64/128/256 GB); it must start where the image expects.
+        var userdata = parts.Keys.First(k => k.Equals(PartitionMap.WindowsTarget, StringComparison.OrdinalIgnoreCase));
+        var (start, size, disk) = await twrp.PartitionExtentAsync(userdata, ct);
+        if (PartitionMap.CheckWindowsTarget(start, size, disk) is { } problem)
+        {
+            return (false, $"{problem} This phone's layout differs; stopping before any write.");
+        }
+        var grows = size > PartitionMap.WindowsBytes ? $"; Windows grows to {size >> 20} MiB on first boot" : "";
+        return (true, $"Partitions verified on a {PartitionMap.StorageVariant(disk)} phone: USERDATA ({size >> 20} MiB) and the CACHE boot partition match the validated layout{grows}.");
     }
 
     private static async Task<(bool, string)> RunTransferAsync(IProgress<string> log, CancellationToken ct)

@@ -61,11 +61,65 @@ public static class PartitionMap
     public const string SystemGuid = "{52444e41-494f-2044-5359-5354454d0000}";
 
     /// <summary>
-    /// Byte geometry of the phone's main UFS unit and of USERDATA on it. The Windows image is
-    /// built on a virtual disk with exactly this layout so the NTFS volume matches USERDATA.
+    /// Byte geometry of the 64 GB phone's main UFS unit and of USERDATA on it. The Windows image is
+    /// built on a virtual disk with exactly this layout so the NTFS volume matches USERDATA there.
+    /// The 128 GB and 256 GB phones use the same PIT: every partition before USERDATA sits at the
+    /// same LBAs, and USERDATA (the last partition) starts at <see cref="WindowsOffset"/> but runs
+    /// on to the end of the larger unit. The same image is written to its start, and Windows grows
+    /// the volume to fill the partition on first boot (<see cref="Image.UnattendXml"/>).
     /// </summary>
     public const long DiskBytes = 63_963_136_000;
     public const long WindowsOffset = 6_951_534_592;
     public const long WindowsBytes = 57_004_785_664;
     public const long CacheBytes = 629_145_600;
+
+    private const long BlockBytes = 4096;
+
+    /// <summary>
+    /// Names the phone's storage size from the byte size of its main UFS unit, or null for a unit
+    /// this phone never shipped with. The bands are the ones the UFS driver accepts
+    /// (Exynos9810Ufs.h, STORAGE VARIANTS): the 64 GB unit exactly, the larger two within a band.
+    /// </summary>
+    public static string? StorageVariant(long diskBytes)
+    {
+        if (diskBytes % BlockBytes != 0)
+        {
+            return null;
+        }
+        var blocks = diskBytes / BlockBytes;
+        return blocks switch
+        {
+            DiskBytes / BlockBytes => "64 GB",
+            >= 30_000_001 and <= 31_300_001 => "128 GB",
+            >= 60_000_001 and <= 62_600_001 => "256 GB",
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Checks the phone's USERDATA against what the Windows image needs: a supported unit, the
+    /// validated start offset, room for the whole volume, and an end inside the unit. Returns why
+    /// it does not fit, or null when it does.
+    /// </summary>
+    public static string? CheckWindowsTarget(long startBytes, long sizeBytes, long diskBytes)
+    {
+        var variant = StorageVariant(diskBytes);
+        if (variant is null)
+        {
+            return $"The phone's storage is {diskBytes:N0} bytes, which is not a 64, 128 or 256 GB Galaxy S9+ unit.";
+        }
+        if (startBytes != WindowsOffset)
+        {
+            return $"USERDATA starts at byte {startBytes:N0}, not the validated {WindowsOffset:N0}.";
+        }
+        if (startBytes + sizeBytes > diskBytes)
+        {
+            return $"USERDATA ends past the end of the {diskBytes:N0}-byte disk.";
+        }
+        if (variant == "64 GB" ? sizeBytes != WindowsBytes : sizeBytes < WindowsBytes)
+        {
+            return $"USERDATA is {sizeBytes:N0} bytes; a {variant} phone needs {(variant == "64 GB" ? "exactly" : "at least")} {WindowsBytes:N0}.";
+        }
+        return null;
+    }
 }
