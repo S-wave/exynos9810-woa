@@ -575,10 +575,7 @@ public sealed partial class InstallPage : Page, IWizardStep
         var outDir = Path.Combine(AppServices.WorkDirectory, "out");
         var vhdx = Path.Combine(AppServices.WorkDirectory, "s9windows.vhdx");
         Directory.CreateDirectory(AppServices.WorkDirectory);
-        if (File.Exists(vhdx))
-        {
-            File.Delete(vhdx);
-        }
+        // The builder detaches and deletes any leftover s9windows.vhdx itself.
         var built = await new VhdxImageBuilder(AppServices.Runner).BuildAsync(vhdx,
             AppServices.InstallImagePath!, AppServices.EditionIndex, drivers, AppServices.Profile,
             AppServices.Unattend, outDir, log, ct);
