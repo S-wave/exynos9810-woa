@@ -20,6 +20,8 @@ public sealed record BuiltImage(string WindowsImage, long WindowsBytes, string W
 /// The VHDX is then detached and re-attached read-only, and the Windows partition is read
 /// straight off the virtual disk, so the exported image is a cleanly unmounted volume whose
 /// NTFS geometry matches USERDATA byte for byte. The ESP files are copied out separately.
+/// The disk is created and attached through Windows' own virtual disk API
+/// (<see cref="VirtualDiskHost"/>), so Hyper-V does not have to be installed or running.
 /// </summary>
 public sealed class VhdxImageBuilder
 {
@@ -31,11 +33,14 @@ public sealed class VhdxImageBuilder
     private readonly BootConfiguration _boot;
     private readonly RawImageExporter _exporter = new();
     private readonly Func<int, IRawDiskSource> _diskFactory;
+    private readonly IVirtualDiskHost _virtualDisks;
     private readonly string _powershell;
     private readonly string _bcdboot;
 
-    public VhdxImageBuilder(IProcessRunner runner, string? system32 = null, Func<int, IRawDiskSource>? diskFactory = null)
+    public VhdxImageBuilder(IProcessRunner runner, string? system32 = null, Func<int, IRawDiskSource>? diskFactory = null,
+        IVirtualDiskHost? virtualDisks = null)
     {
+        _virtualDisks = virtualDisks ?? new VirtualDiskHost();
         _runner = runner;
         system32 ??= Environment.GetFolderPath(Environment.SpecialFolder.System);
         _imageBuilder = new ImageBuilder(runner, system32);
@@ -60,17 +65,38 @@ public sealed class VhdxImageBuilder
 
     private static string N(long v) => v.ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>The replica's sector size: the phone's UFS is a 4096-byte sector device.</summary>
+    internal const uint SectorBytes = 4096;
+
+    /// <summary>Block size of the dynamic VHDX (what the earlier New-VHD build used).</summary>
+    internal const uint BlockBytes = 32 * 1024 * 1024;
+
     /// <summary>
-    /// PowerShell that creates and attaches the 4Kn replica disk. The phone's UFS is a 4096-byte
-    /// sector device; a 512-byte disk would format NTFS for 512-byte sectors, which will not mount
-    /// when written raw to USERDATA, so the sector size and the partition geometry are asserted.
+    /// PowerShell that waits for the just-attached disk to show up, brings it online (and writable,
+    /// unless it was attached read-only) when this PC's SAN policy left it offline, and checks its
+    /// sector size. Leaves it in <c>$disk</c>.
     /// </summary>
-    internal string CreateScript(string vhdxPath) => string.Join("\n",
+    private static string[] FindDisk(int diskNumber, bool readOnly) =>
+    [
         "$ErrorActionPreference = 'Stop'",
+        "$disk = $null",
+        $"for ($i = 0; $i -lt 60 -and -not $disk; $i++) {{ Update-HostStorageCache; $disk = Get-Disk -Number {diskNumber} -ErrorAction SilentlyContinue; if (-not $disk) {{ Start-Sleep -Milliseconds 500 }} }}",
+        $"if (-not $disk) {{ throw 'The virtual disk did not show up as disk {diskNumber}' }}",
+        $"if ($disk.IsOffline) {{ Set-Disk -Number {diskNumber} -IsOffline $false; $disk = Get-Disk -Number {diskNumber} }}",
+        .. readOnly ? Array.Empty<string>() :
+            [$"if ($disk.IsReadOnly) {{ Set-Disk -Number {diskNumber} -IsReadOnly $false; $disk = Get-Disk -Number {diskNumber} }}"],
+        $"if ($disk.LogicalSectorSize -ne {SectorBytes}) {{ throw \"The virtual disk has $($disk.LogicalSectorSize)-byte sectors, not {SectorBytes}\" }}",
+    ];
+
+    /// <summary>
+    /// PowerShell that lays out the attached 4Kn replica disk. A 512-byte disk would format NTFS
+    /// for 512-byte sectors, which will not mount when written raw to USERDATA, so the sector size
+    /// and the partition geometry are asserted. It uses only the Storage module, which every
+    /// edition of Windows has; the disk itself is created and attached by <see cref="VirtualDiskHost"/>.
+    /// </summary>
+    internal string CreateScript(int diskNumber) => string.Join("\n", [
+        .. FindDisk(diskNumber, readOnly: false),
         $"foreach ($l in '{EspLetter}','{WindowsLetter}') {{ if (Test-Path \"${{l}}:\\\") {{ throw \"Drive ${{l}}: is already in use\" }} }}",
-        $"$vhd = New-VHD -Path '{vhdxPath}' -Dynamic -SizeBytes {N(PartitionMap.DiskBytes)} -BlockSizeBytes 32MB -LogicalSectorSizeBytes 4096 -PhysicalSectorSizeBytes 4096",
-        "$disk = Mount-VHD -Path $vhd.Path -NoDriveLetter -Passthru | Get-Disk",
-        "if ($disk.LogicalSectorSize -ne 4096) { throw 'The virtual disk is not 4Kn' }",
         "Initialize-Disk -Number $disk.Number -PartitionStyle GPT | Out-Null",
         "$esp = New-Partition -DiskNumber $disk.Number -Size 260MB -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'",
         "Format-Volume -Partition $esp -FileSystem FAT32 -NewFileSystemLabel 'System' -Confirm:$false | Out-Null",
@@ -79,20 +105,14 @@ public sealed class VhdxImageBuilder
         $"$win = New-Partition -DiskNumber $disk.Number -Offset {N(PartitionMap.WindowsOffset)} -Size {N(PartitionMap.WindowsBytes)} -Alignment 4096 -GptType '{{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}}'",
         $"if ($win.Offset -ne {N(PartitionMap.WindowsOffset)} -or $win.Size -ne {N(PartitionMap.WindowsBytes)}) {{ throw 'The Windows partition does not match USERDATA' }}",
         "Format-Volume -Partition $win -FileSystem NTFS -AllocationUnitSize 4096 -NewFileSystemLabel 'Windows' -Confirm:$false | Out-Null",
-        $"$win | Set-Partition -NewDriveLetter {WindowsLetter}");
+        $"$win | Set-Partition -NewDriveLetter {WindowsLetter}"]);
 
-    /// <summary>Re-attaches the finished VHDX read-only and prints its disk number.</summary>
-    internal static string AttachReadOnlyScript(string vhdxPath) => string.Join("\n",
-        "$ErrorActionPreference = 'Stop'",
-        $"$disk = Mount-VHD -Path '{vhdxPath}' -ReadOnly -NoDriveLetter -Passthru | Get-Disk",
-        "if (-not $disk.IsReadOnly -or $disk.LogicalSectorSize -ne 4096) { throw 'Read-only 4Kn attach failed' }",
+    /// <summary>Checks the finished VHDX, re-attached read-only, still holds the Windows partition.</summary>
+    internal static string VerifyReadOnlyScript(int diskNumber) => string.Join("\n", [
+        .. FindDisk(diskNumber, readOnly: true),
+        "if (-not $disk.IsReadOnly) { throw 'The virtual disk is not attached read-only' }",
         $"$p = Get-Partition -DiskNumber $disk.Number | Where-Object {{ $_.Offset -eq {N(PartitionMap.WindowsOffset)} }}",
-        $"if (-not $p -or $p.Size -ne {N(PartitionMap.WindowsBytes)}) {{ throw 'The Windows partition is missing from the image' }}",
-        "Write-Output $disk.Number");
-
-    internal static string DetachScript(string vhdxPath) => string.Join("\n",
-        "$ErrorActionPreference = 'SilentlyContinue'",
-        $"Dismount-VHD -Path '{vhdxPath}'");
+        $"if (-not $p -or $p.Size -ne {N(PartitionMap.WindowsBytes)}) {{ throw 'The Windows partition is missing from the image' }}"]);
 
     public async Task<BuiltImage> BuildAsync(string vhdxPath, string installImage, int index,
         IReadOnlyList<DriverPackage> drivers, SlimProfile profile, UnattendOptions unattend, string outputDir,
@@ -110,9 +130,13 @@ public sealed class VhdxImageBuilder
 
         string loaderSha, kernelSha;
         log?.Report("Creating a virtual disk that mirrors the phone's storage...");
-        await RunScript(CreateScript(vhdxPath), ct).ConfigureAwait(false);
+        // A run that was cancelled or crashed under an older installer (Mount-VHD attachments
+        // outlive the process) can leave the file attached and locked; clear it first.
+        _virtualDisks.DetachAndDelete(vhdxPath);
+        var writable = _virtualDisks.CreateAndAttach(vhdxPath, PartitionMap.DiskBytes, BlockBytes, SectorBytes, SectorBytes);
         try
         {
+            await RunScript(CreateScript(writable.DiskNumber), ct).ConfigureAwait(false);
             await _imageBuilder.BuildAsync(winRoot, installImage, index, drivers, profile, log, ct).ConfigureAwait(false);
 
             log?.Report("Writing the OOBE answer file...");
@@ -136,25 +160,20 @@ public sealed class VhdxImageBuilder
         finally
         {
             log?.Report("Detaching the virtual disk...");
-            await RunScript(DetachScript(vhdxPath), CancellationToken.None).ConfigureAwait(false);
+            writable.Dispose();
         }
 
         log?.Report("Exporting the Windows volume from a read-only attach (about 53 GB)...");
-        var disk = int.Parse((await RunScript(AttachReadOnlyScript(vhdxPath), ct).ConfigureAwait(false)).Trim().Split('\n')[^1].Trim(),
-            CultureInfo.InvariantCulture);
-        try
-        {
-            using var disposable = _diskFactory(disk) as IDisposable;
-            var source = (IRawDiskSource)disposable!;
-            var (bytes, sha) = await _exporter.ExportAsync(source,
-                new PartitionExtent(PartitionMap.WindowsOffset, PartitionMap.WindowsBytes), windowsImage, log, ct).ConfigureAwait(false);
-            log?.Report("Windows image ready.");
-            return new BuiltImage(windowsImage, bytes, sha, espOut, loaderSha, kernelSha);
-        }
-        finally
-        {
-            await RunScript(DetachScript(vhdxPath), CancellationToken.None).ConfigureAwait(false);
-        }
+        using var readOnly = _virtualDisks.AttachReadOnly(vhdxPath);
+        var disk = readOnly.DiskNumber;
+        await RunScript(VerifyReadOnlyScript(disk), ct).ConfigureAwait(false);
+        // Declared after readOnly, so it is closed before the disk is detached.
+        using var disposable = _diskFactory(disk) as IDisposable;
+        var source = (IRawDiskSource)disposable!;
+        var (bytes, sha) = await _exporter.ExportAsync(source,
+            new PartitionExtent(PartitionMap.WindowsOffset, PartitionMap.WindowsBytes), windowsImage, log, ct).ConfigureAwait(false);
+        log?.Report("Windows image ready.");
+        return new BuiltImage(windowsImage, bytes, sha, espOut, loaderSha, kernelSha);
     }
 
     /// <summary>

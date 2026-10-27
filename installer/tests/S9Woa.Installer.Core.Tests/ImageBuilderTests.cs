@@ -124,22 +124,105 @@ public class ImageBuilderTests
     public void VhdxScriptMirrorsThePhoneDisk()
     {
         var builder = new VhdxImageBuilder(new RecordingRunner(), @"C:\sys") { EspLetter = 'S', WindowsLetter = 'W' };
-        var script = builder.CreateScript(@"C:\img\s9.vhdx");
-        Assert.Contains("New-VHD -Path 'C:\\img\\s9.vhdx'", script, StringComparison.Ordinal);
-        Assert.Contains("-SizeBytes 63963136000", script, StringComparison.Ordinal);
-        Assert.Contains("-LogicalSectorSizeBytes 4096 -PhysicalSectorSizeBytes 4096", script, StringComparison.Ordinal);
+        var script = builder.CreateScript(7);
+        // No Hyper-V cmdlets: the disk is created and attached through virtdisk.dll.
+        Assert.DoesNotContain("-VHD", script, StringComparison.Ordinal);
+        Assert.Contains("Get-Disk -Number 7", script, StringComparison.Ordinal);
+        Assert.Contains("Set-Disk -Number 7 -IsOffline $false", script, StringComparison.Ordinal);
+        Assert.Contains("Set-Disk -Number 7 -IsReadOnly $false", script, StringComparison.Ordinal);
+        Assert.Contains("LogicalSectorSize -ne 4096", script, StringComparison.Ordinal);
         Assert.Contains("{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}", script, StringComparison.Ordinal); // ESP
         Assert.Contains("{e3c9e316-0b5c-4db8-817d-f92df00215ae}", script, StringComparison.Ordinal); // MSR
         Assert.Contains("-Offset 6951534592 -Size 57004785664 -Alignment 4096", script, StringComparison.Ordinal); // = USERDATA
         Assert.Contains("-FileSystem NTFS -AllocationUnitSize 4096", script, StringComparison.Ordinal);
         Assert.Contains("-NewDriveLetter S", script, StringComparison.Ordinal);
         Assert.Contains("-NewDriveLetter W", script, StringComparison.Ordinal);
-        var attach = VhdxImageBuilder.AttachReadOnlyScript(@"C:\img\s9.vhdx");
-        Assert.Contains("-ReadOnly -NoDriveLetter", attach, StringComparison.Ordinal);
-        Assert.Contains("6951534592", attach, StringComparison.Ordinal);
-        Assert.Contains("Dismount-VHD", VhdxImageBuilder.DetachScript(@"C:\img\s9.vhdx"), StringComparison.Ordinal);
+        var verify = VhdxImageBuilder.VerifyReadOnlyScript(9);
+        Assert.DoesNotContain("-VHD", verify, StringComparison.Ordinal);
+        Assert.Contains("Get-Partition -DiskNumber $disk.Number", verify, StringComparison.Ordinal);
+        Assert.Contains("6951534592", verify, StringComparison.Ordinal);
+        Assert.Contains("-not $disk.IsReadOnly", verify, StringComparison.Ordinal);
+        Assert.DoesNotContain("-IsReadOnly $false", verify, StringComparison.Ordinal); // never made writable
         Assert.DoesNotContain('C', VhdxImageBuilder.FreeDriveLetters());
     }
+
+    private sealed class FakeVirtualDisks : IVirtualDiskHost
+    {
+        public List<string> Events { get; } = [];
+
+        private sealed class Disk(FakeVirtualDisks owner, int number, string kind) : IAttachedVirtualDisk
+        {
+            public int DiskNumber => number;
+            public void Dispose() => owner.Events.Add($"detach {kind}");
+        }
+
+        public IAttachedVirtualDisk CreateAndAttach(string path, long sizeBytes, uint blockSizeBytes, uint logicalSectorBytes, uint physicalSectorBytes)
+        {
+            Events.Add($"create {path} {sizeBytes} {blockSizeBytes} {logicalSectorBytes}/{physicalSectorBytes}");
+            return new Disk(this, 7, "rw");
+        }
+
+        public IAttachedVirtualDisk AttachReadOnly(string path)
+        {
+            Events.Add($"attach-ro {path}");
+            return new Disk(this, 9, "ro");
+        }
+
+        public void DetachAndDelete(string path) => Events.Add($"clear {path}");
+    }
+
+    [Fact]
+    public async Task AFailedBuildStillDetachesTheVirtualDisk()
+    {
+        var disks = new FakeVirtualDisks();
+        // DISM fails right after the disk is laid out.
+        var runner = new FailingRunner(c => c.Contains("/Apply-Image", StringComparison.Ordinal));
+        var builder = new VhdxImageBuilder(runner, @"C:\sys", virtualDisks: disks) { EspLetter = 'S', WindowsLetter = 'W' };
+        var outDir = Directory.CreateTempSubdirectory("s9woa-out").FullName;
+        try
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => builder.BuildAsync(@"C:\img\s9.vhdx", @"C:\m\install.wim", 6,
+                [new DriverPackage("Ufs", @"C:\d\Ufs")], SlimProfile.None, new UnattendOptions(), outDir));
+        }
+        finally
+        {
+            Directory.Delete(outDir, recursive: true);
+        }
+
+        Assert.Equal(
+            [@"clear C:\img\s9.vhdx", @"create C:\img\s9.vhdx 63963136000 33554432 4096/4096", "detach rw"],
+            disks.Events);
+        // The layout script ran against the disk number the attach reported.
+        Assert.Contains(runner.Scripts, s => s.Contains("Get-Disk -Number 7", StringComparison.Ordinal));
+    }
+
+    /// <summary>Fails the first call matching a predicate; records the PowerShell scripts it is given.</summary>
+    private sealed class FailingRunner(Func<string, bool> fail) : IProcessRunner
+    {
+        public List<string> Scripts { get; } = [];
+
+        public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            var file = arguments.SkipWhile(a => a != "-File").Skip(1).FirstOrDefault();
+            if (file is not null && File.Exists(file))
+            {
+                Scripts.Add(File.ReadAllText(file));
+            }
+            var line = string.Join(' ', arguments);
+            return Task.FromResult(fail(line) ? new ProcessResult(1, "", "simulated failure") : new ProcessResult(0, "", ""));
+        }
+    }
+
+    [Theory]
+    [InlineData(@"\\.\PhysicalDrive3", 3)]
+    [InlineData(@"\\.\PHYSICALDRIVE12", 12)]
+    public void ReadsTheDiskNumberFromThePhysicalPath(string path, int number) =>
+        Assert.Equal(number, VirtualDiskHost.ParseDiskNumber(path));
+
+    [Fact]
+    public void RefusesAPhysicalPathItDoesNotUnderstand() =>
+        Assert.Throws<InvalidOperationException>(() => VirtualDiskHost.ParseDiskNumber(@"\\?\Volume{1234}"));
 
     private sealed class FailingOfflineRunner(bool offlineSupported) : IProcessRunner
     {
