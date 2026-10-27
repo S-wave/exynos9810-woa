@@ -11,6 +11,14 @@ Windows.
 > knows which steps are automated and which are not: unfinished stages are shown
 > as *coming soon* and the installer stops before them rather than guessing. Do
 > not point it at another model or firmware.
+>
+> **Storage sizes.** The reference phone is the 64 GB model. The 128 GB and
+> 256 GB models are supported but not yet validated on hardware: they share the
+> 64 GB partition layout except for a larger `USERDATA`, so the installer writes
+> the same Windows image to the start of it and Windows grows the volume to fill
+> the whole partition on first boot. The UFS driver takes the end of the disk
+> (backup GPT and write fence) from the size the phone reports, accepting only
+> the 64 GB unit exactly or a size inside the 128 GB or 256 GB band.
 
 ## 🎬 Watch it install
 

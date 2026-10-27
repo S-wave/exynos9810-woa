@@ -25,8 +25,9 @@ public sealed record UnattendOptions
 /// Generates a Windows Setup answer file that drives OOBE to the desktop without
 /// user input: it creates a local administrator, skips the EULA, privacy,
 /// Microsoft-account and wireless screens, and sets the locale, time zone and
-/// computer name. It also sets the display scaling (<see cref="UnattendOptions.Dpi"/>)
-/// in the specialize pass. Uses only the public unattend schema — no product internals.
+/// computer name. In the specialize pass it grows the Windows volume to fill USERDATA
+/// (<see cref="ExtendVolumeCommand"/>) and sets the display scaling (<see cref="UnattendOptions.Dpi"/>).
+/// Uses only the public unattend schema — no product internals.
 /// Written into the offline image at <c>Windows\Panther\unattend.xml</c>, which
 /// Windows processes during the specialize and oobeSystem passes.
 /// </summary>
@@ -63,7 +64,7 @@ public static class UnattendXml
             new XDeclaration("1.0", "utf-8", null),
             new XElement(Ns + "unattend",
                 new XAttribute(XNamespace.Xmlns + "wcm", Wcm.NamespaceName),
-                options.Dpi is { } dpi ? Specialize(dpi) : null,
+                Specialize(options.Dpi),
                 OobeSystem(options)));
         // The file is written as UTF-8, so the declaration must say UTF-8. Saving into a plain
         // StringWriter would declare "utf-16" (its own encoding) over UTF-8 bytes, which Windows
@@ -117,17 +118,36 @@ public static class UnattendXml
         ];
     }
 
-    private static XElement Specialize(int dpi) =>
-        new(Ns + "settings",
+    /// <summary>
+    /// The image is built to the 64 GB phone's USERDATA. On the 128 GB and 256 GB phones USERDATA
+    /// starts at the same place but is larger, so the NTFS volume is grown to fill it before any
+    /// account exists. diskpart's <c>extend filesystem</c> grows only the file system, inside the
+    /// partition it is already on, so it never touches the partition table; where there is nothing
+    /// to grow (the 64 GB phone) it fails harmlessly, and the step always reports success so it
+    /// cannot hold up setup.
+    /// </summary>
+    internal const string ExtendVolumeCommand =
+        @"cmd.exe /c (echo select volume %SystemDrive:~0,1%& echo extend filesystem)>""%WINDIR%\Temp\s9extend.txt"""
+        + @" & diskpart.exe /s ""%WINDIR%\Temp\s9extend.txt"" & del ""%WINDIR%\Temp\s9extend.txt"" & exit /b 0";
+
+    private static XElement Specialize(int? dpi)
+    {
+        var commands = new List<(string Description, string Path)> { ("Grow Windows to fill USERDATA", ExtendVolumeCommand) };
+        if (dpi is { } d)
+        {
+            commands.AddRange(DpiCommands(d).Select((command, i) => ($"Display scaling {d} DPI ({i + 1})", command)));
+        }
+        return new(Ns + "settings",
             new XAttribute("pass", "specialize"),
             Component("Microsoft-Windows-Deployment",
                 new XElement(Ns + "RunSynchronous",
-                    DpiCommands(dpi).Select((command, i) =>
+                    commands.Select((c, i) =>
                         new XElement(Ns + "RunSynchronousCommand",
                             new XAttribute(Wcm + "action", "add"),
                             new XElement(Ns + "Order", i + 1),
-                            new XElement(Ns + "Description", $"Display scaling {dpi} DPI ({i + 1})"),
-                            new XElement(Ns + "Path", command))))));
+                            new XElement(Ns + "Description", c.Description),
+                            new XElement(Ns + "Path", c.Path))))));
+    }
 
     private static XElement OobeSystem(UnattendOptions o)
     {

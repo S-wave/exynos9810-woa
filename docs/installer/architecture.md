@@ -159,6 +159,10 @@ seams so it is unit-tested without hardware:
   verifying the read-back. Together with FAT32 CACHE/SYSTEM ESPs (4096-byte
   sectors) and a BCD whose devices are GPT-qualified (CACHE for the boot manager,
   USERDATA for the loader), the partitions match the reference phone exactly.
+  On 128 GB and 256 GB phones only `USERDATA` differs: `PartitionMap.CheckWindowsTarget`
+  requires it to start at the 64 GB offset and hold at least the 64 GB-sized Windows
+  volume, and the answer file's specialize pass runs `diskpart extend filesystem`
+  so the volume fills the partition.
 - `BackupService` — verified identity backup (efs and friends) to the PC, with a
   device/PC sha256 cross-check and a JSON manifest. Refuses if `efs` is missing.
 - `TwrpFlasher` — `ITwrpFlasher`, `TwrpFlashService` (uses the first available

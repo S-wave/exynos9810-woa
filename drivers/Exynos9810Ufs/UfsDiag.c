@@ -1309,6 +1309,11 @@ static const UFS_WRITE_PROBE_ENTRY WriteProbeEntries[] = {
     {"WRITE_ONE_ABOVE_FENCE",     UFS_WRITE_PROBE_FROM_LAST,  1,  "REJECT_FENCE"}
 };
 
+static BOOL
+ScratchRegionIsUnallocated(
+    ULONGLONG *DiskBytes
+    );
+
 static void
 RunWriteProbe(
     void
@@ -1343,6 +1348,24 @@ RunWriteProbe(
             CrashAttempt
             );
         return;
+    }
+
+    /*
+     * WRITE_LAST_FENCED_BLOCK is the unallocated tail only on the 64 GB unit.
+     * On a larger unit the fence top follows the disk and that block can belong
+     * to USERDATA, so a LIVE probe is refused there; DISARMED and DRY_RUN still
+     * run, since neither reaches the media.
+     */
+    if (WriteMode == UFS_WRITE_MODE_LIVE) {
+        ULONGLONG DiskBytes;
+
+        if (!ScratchRegionIsUnallocated(&DiskBytes)) {
+            printf(
+                "UFS_WRITE_PROBE=0 REASON=LIVE_ON_LARGER_UNIT DISK_BYTES=%llu\n",
+                DiskBytes
+                );
+            return;
+        }
     }
 
     printf(
@@ -1654,6 +1677,60 @@ C_ASSERT(UFS_WRITE_LIVE_MAX_BLOCKS <= UFS_SCRATCH_BLOCKS);
  */
 C_ASSERT(UFS_SCRATCH_LBA > 15614335UL);
 C_ASSERT((UFS_SCRATCH_LBA + UFS_SCRATCH_BLOCKS - 1UL) < 15615995UL);
+
+/*
+ * Those LBAs are only unallocated on the 64 GB unit. On the 128 GB and 256 GB
+ * units USERDATA runs on past them, so the scratch region is the middle of the
+ * Windows volume and the driver's fence - which now follows the unit's size -
+ * would let a write through. Every scratch writer asks this first, and it asks
+ * the disk itself rather than the driver, so it does not share the driver's
+ * assumptions.
+ */
+#define UFS_SCRATCH_UNIT_BYTES    (15616000ULL * UFS_WRITE_LIVE_BLOCK_SIZE)
+
+static BOOL
+ScratchRegionIsUnallocated(
+    ULONGLONG *DiskBytes
+    )
+{
+    HANDLE Handle;
+    GET_LENGTH_INFORMATION Length;
+    DWORD Returned = 0;
+    BOOL Result;
+
+    *DiskBytes = 0;
+    Handle = CreateFileW(
+        L"\\\\.\\PhysicalDrive0",
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        0,
+        NULL
+        );
+    if (Handle == INVALID_HANDLE_VALUE) {
+        return FALSE;
+    }
+
+    ZeroMemory(&Length, sizeof(Length));
+    Result = DeviceIoControl(
+        Handle,
+        IOCTL_DISK_GET_LENGTH_INFO,
+        NULL,
+        0,
+        &Length,
+        sizeof(Length),
+        &Returned,
+        NULL
+        );
+    CloseHandle(Handle);
+    if (!Result) {
+        return FALSE;
+    }
+
+    *DiskBytes = (ULONGLONG)Length.Length.QuadPart;
+    return (BOOL)(*DiskBytes == UFS_SCRATCH_UNIT_BYTES);
+}
 
 static BOOL
 WriteLiveBlock(
@@ -2097,6 +2174,18 @@ RunWriteLive(
             CrashAttempt
             );
         return;
+    }
+
+    {
+        ULONGLONG DiskBytes;
+
+        if (!ScratchRegionIsUnallocated(&DiskBytes)) {
+            printf(
+                "UFS_WRITE_LIVE=0 REASON=SCRATCH_IN_USERDATA DISK_BYTES=%llu\n",
+                DiskBytes
+                );
+            return;
+        }
     }
 
     /*
@@ -6361,6 +6450,19 @@ wmain(
             ReadBytes = 0;
         }
         CloseHandle(Source);
+
+        {
+            ULONGLONG DiskBytes;
+
+            if (!ScratchRegionIsUnallocated(&DiskBytes)) {
+                printf(
+                    "UFS_LOGLBA=0 REASON=SCRATCH_IN_USERDATA DISK_BYTES=%llu\n",
+                    DiskBytes
+                    );
+                VirtualFree(Buffer, 0, MEM_RELEASE);
+                return 1;
+            }
+        }
 
         Disk = CreateFileW(
             L"\\\\.\\PhysicalDrive0",

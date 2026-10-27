@@ -4452,6 +4452,52 @@ UfsCaptureResources(
     UfsSetDiagnosticStage(Adapter, UFS_DIAG_STAGE_RESOURCES_CAPTURED);
 }
 
+/*
+ * The last LBAs this phone's UFS can legitimately report: the measured 64 GB
+ * unit exactly, or one inside the 128 GB or 256 GB band. See STORAGE VARIANTS
+ * in Exynos9810Ufs.h.
+ */
+static
+BOOLEAN
+UfsIsSupportedLastLogicalBlock(
+    _In_ ULONGLONG LastBlock
+    )
+{
+    return (BOOLEAN)(
+        (LastBlock == UFS_REFERENCE_LAST_LOGICAL_BLOCK) ||
+        ((LastBlock >= UFS_128GB_MIN_LAST_LOGICAL_BLOCK) &&
+         (LastBlock <= UFS_128GB_MAX_LAST_LOGICAL_BLOCK)) ||
+        ((LastBlock >= UFS_256GB_MIN_LAST_LOGICAL_BLOCK) &&
+         (LastBlock <= UFS_256GB_MAX_LAST_LOGICAL_BLOCK)));
+}
+
+/*
+ * Top of the write fence for this unit: the GPT's LastUsableLBA, derived from
+ * the validated capacity. Until capacity is known the 64 GB value is reported,
+ * which is the smallest and therefore the most conservative; writes are refused
+ * anyway until CapacityValid is set.
+ *
+ * Outside full-Windows mode the fence only exists to reach the 64 GB unit's
+ * unallocated tail, which on a larger unit is the middle of USERDATA, so the
+ * fence collapses there instead of moving.
+ */
+static
+ULONGLONG
+UfsWriteFenceLastLba(
+    _In_ PUFS_ADAPTER_EXTENSION Adapter
+    )
+{
+    if (!Adapter->CapacityValid) {
+        return UFS_WRITE_FENCE_LAST_LBA;
+    }
+#if UFS_FULL_WINDOWS_MODE
+    return UFS_WRITE_FENCE_LAST_LBA_FOR(Adapter->LastLogicalBlock);
+#else
+    return (Adapter->LastLogicalBlock == UFS_REFERENCE_LAST_LOGICAL_BLOCK) ?
+        UFS_WRITE_FENCE_LAST_LBA : 0ULL;
+#endif
+}
+
 static
 VOID
 UfsRefreshDiagnostic(
@@ -4521,7 +4567,7 @@ UfsRefreshDiagnostic(
     Adapter->Diagnostic.WritesArmed =
         (Adapter->WriteMode != UFS_WRITE_MODE_DISARMED) ? 1UL : 0UL;
     Adapter->Diagnostic.WriteFenceFirstLba = (ULONG)UFS_WRITE_FENCE_FIRST_LBA;
-    Adapter->Diagnostic.WriteFenceLastLba = (ULONG)UFS_WRITE_FENCE_LAST_LBA;
+    Adapter->Diagnostic.WriteFenceLastLba = (ULONG)UfsWriteFenceLastLba(Adapter);
     Adapter->Diagnostic.WriteArmRequests = Adapter->WriteArmRequests;
     Adapter->Diagnostic.WritesAttempted = Adapter->WritesAttempted;
     Adapter->Diagnostic.WritesFenced = Adapter->WritesFenced;
@@ -5509,10 +5555,11 @@ UfsValidateWriteTransfer(
     /*
      * GPT guard. Independent of the fence by construction - it is stated in
      * terms of the partition table's own geometry, so it still holds if the
-     * fence bounds are ever edited incorrectly.
+     * fence bounds are ever edited incorrectly. The backup copy sits at the end
+     * of the unit, so its position comes from the validated capacity.
      */
     if ((LogicalBlock <= UFS_GPT_PRIMARY_LAST_LBA) ||
-        (LastBlock >= UFS_GPT_BACKUP_FIRST_LBA)) {
+        (LastBlock >= UFS_GPT_BACKUP_FIRST_LBA_FOR(Adapter->LastLogicalBlock))) {
         *RejectCode = UFS_EXEC_REJECT_WRITE_FENCE;
         *FailureBit = UFS_DIAG_FAILURE_WRITE_GPT_GUARD;
         return FALSE;
@@ -5557,7 +5604,7 @@ UfsValidateWriteTransfer(
 
     /* Fence. The whole extent must be inside, not merely overlap it. */
     if ((LogicalBlock < UFS_WRITE_FENCE_FIRST_LBA) ||
-        (LastBlock > UFS_WRITE_FENCE_LAST_LBA)) {
+        (LastBlock > UfsWriteFenceLastLba(Adapter))) {
         *RejectCode = UFS_EXEC_REJECT_WRITE_FENCE;
         *FailureBit = UFS_DIAG_FAILURE_WRITE_FENCE;
         return FALSE;
@@ -6915,8 +6962,10 @@ UfsFinishScsiCommand(
      * Four rules close that for this fixed, soldered LU 0:
      *   1. Validate BEFORE publishing. A rejected value never reaches a field
      *      that an I/O path consumes; it is recorded separately instead.
-     *   2. Require the known 4096-byte block size and last LBA 15615999. A 512
-     *      response is corruption on this phone, not an alternate geometry.
+     *   2. Require the known 4096-byte block size and a last LBA this phone
+     *      can have: exactly 15615999 on the 64 GB unit, or inside the 128 GB
+     *      or 256 GB band (UfsIsSupportedLastLogicalBlock). A 512 response is
+     *      corruption on this phone, not an alternate geometry.
      *   3. Require the entire requested response to land. Any residual on these
      *      tiny boot-critical commands is a partial reply and cannot be parsed.
      *   4. Return SRB_STATUS_BUSY for three invalid replies so Storport issues a
@@ -6938,7 +6987,7 @@ UfsFinishScsiCommand(
         BlockSize = UfsReadBigEndian32(Adapter->Bounce + 4);
 
         if ((BlockSize != UFS_LOGICAL_BLOCK_SIZE) ||
-            (LastBlock != (ULONG)UFS_EXPECTED_LAST_LOGICAL_BLOCK)) {
+            !UfsIsSupportedLastLogicalBlock(LastBlock)) {
             Adapter->CapacityRejected++;
             Adapter->LastRejectedBlockSize = BlockSize;
             Adapter->LastRejectedLogicalBlock = LastBlock;
@@ -6977,7 +7026,7 @@ UfsFinishScsiCommand(
         BlockSize = UfsReadBigEndian32(Adapter->Bounce + 8);
 
         if ((BlockSize != UFS_LOGICAL_BLOCK_SIZE) ||
-            (LastBlock != UFS_EXPECTED_LAST_LOGICAL_BLOCK)) {
+            !UfsIsSupportedLastLogicalBlock(LastBlock)) {
             Adapter->CapacityRejected++;
             Adapter->LastRejectedBlockSize = BlockSize;
             Adapter->LastRejectedLogicalBlock = LastBlock;
@@ -7507,10 +7556,17 @@ UfsExecuteScsi(
              * result on the same hardware - which is what decides whether the
              * rebuilt binary regressed. It lies past sda25's last LBA in
              * unallocated space, so nothing on the device depends on it.
+             *
+             * Only on the 64 GB unit: on a 128 or 256 GB unit those LBAs are
+             * inside USERDATA, so both windows are closed there.
              */
-            BOOLEAN ReadoutOnScratch =
+            BOOLEAN ReadoutUnit =
+                (Adapter->LastLogicalBlock == UFS_REFERENCE_LAST_LOGICAL_BLOCK);
+            BOOLEAN ReadoutOnScratch = ReadoutUnit &&
                 (ReadoutFirst >= UFS_READOUT_SCRATCH_FIRST_LBA) &&
                 (ReadoutLast <= UFS_READOUT_SCRATCH_LAST_LBA);
+
+            ReadoutOnLog = ReadoutOnLog && ReadoutUnit;
 
             if (!ReadoutOnLog && !ReadoutOnScratch) {
                 UfsPramSetPhase(Adapter, UFS_PHASE_CLASSIFY_REJECT);

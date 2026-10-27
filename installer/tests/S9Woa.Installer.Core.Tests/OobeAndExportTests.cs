@@ -53,9 +53,15 @@ public class OobeAndExportTests
         var paths = commands.Select(c => c.Element(Ns + "Path")!.Value).ToList();
         Assert.All(paths, p => Assert.True(p.Length < 260, p)); // RunSynchronous path limit
 
+        // First the volume is grown to fill USERDATA (128/256 GB phones), never failing setup.
+        Assert.Equal(UnattendXml.ExtendVolumeCommand, paths[0]);
+        Assert.Contains("echo extend filesystem", paths[0], StringComparison.Ordinal);
+        Assert.DoesNotContain("extend size", paths[0], StringComparison.Ordinal);
+        Assert.EndsWith("& exit /b 0", paths[0], StringComparison.Ordinal);
+
         // The default profile (which the OOBE account is copied from) is loaded, set to 275 DPI
         // custom scaling, and unloaded; the sign-in screen's profile gets the same.
-        Assert.StartsWith("cmd.exe /c reg.exe load HKU\\S9WoaDefaultUser \"%SystemDrive%\\Users\\Default\\NTUSER.DAT\"", paths[0], StringComparison.Ordinal);
+        Assert.StartsWith("cmd.exe /c reg.exe load HKU\\S9WoaDefaultUser \"%SystemDrive%\\Users\\Default\\NTUSER.DAT\"", paths[1], StringComparison.Ordinal);
         var unload = paths.FindIndex(p => p.StartsWith("reg.exe unload HKU\\S9WoaDefaultUser", StringComparison.Ordinal));
         foreach (var key in new[] { @"HKU\S9WoaDefaultUser", @"HKU\.DEFAULT" })
         {
@@ -65,9 +71,11 @@ public class OobeAndExportTests
             Assert.Equal(key.EndsWith("DefaultUser", StringComparison.Ordinal), logPixels < unload && scaling < unload);
         }
 
-        // No scaling requested: no specialize pass at all; out-of-range values are refused.
+        // No scaling requested: the specialize pass only grows the volume; out-of-range values are refused.
         var none = XDocument.Parse(UnattendXml.Build(new UnattendOptions { Dpi = null }));
-        Assert.Equal(["oobeSystem"], none.Root!.Elements(Ns + "settings").Select(s => s.Attribute("pass")!.Value));
+        Assert.Equal(["specialize", "oobeSystem"], none.Root!.Elements(Ns + "settings").Select(s => s.Attribute("pass")!.Value));
+        Assert.Equal([UnattendXml.ExtendVolumeCommand],
+            none.Root!.Descendants(Ns + "RunSynchronousCommand").Select(c => c.Element(Ns + "Path")!.Value));
         Assert.Throws<ArgumentOutOfRangeException>(() => UnattendXml.Build(new UnattendOptions { Dpi = 72 }));
         Assert.Throws<ArgumentOutOfRangeException>(() => UnattendXml.Build(new UnattendOptions { Dpi = 1000 }));
     }
