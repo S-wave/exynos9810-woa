@@ -8,6 +8,7 @@ using S9Woa.Installer.Core.Device;
 using S9Woa.Installer.Core.Host;
 using S9Woa.Installer.Core.Image;
 using S9Woa.Installer.Core.Stages;
+using S9Woa.Installer.Core.Toolset;
 
 namespace S9Woa.Installer.App.Pages;
 
@@ -567,11 +568,24 @@ public sealed partial class InstallPage : Page, IWizardStep
                 return media;
             }
         }
+        // Drivers downloaded by an earlier installer stay on disk; an outdated storage driver would
+        // build an image that bugchecks with INACCESSIBLE_BOOT_DEVICE on 128/256 GB phones.
+        var driverStatus = AppServices.Toolset.Detect(Tools.Drivers);
+        if (driverStatus.State != ToolState.Ready && AppServices.Toolset.Config.BuildFolder is null)
+        {
+            log.Report($"{driverStatus.Detail} Downloading the current drivers...");
+            driverStatus = await AppServices.Toolset.DownloadReleaseAsync(Tools.Drivers, log, ct);
+        }
+        if (driverStatus.State != ToolState.Ready)
+        {
+            return (false, $"The phone drivers are not usable: {driverStatus.Detail} Fix them on the Set up page (release download or build folder).");
+        }
         var drivers = ImageBuilder.DiscoverDrivers(AppServices.DriversDirectory);
         if (drivers.Count == 0)
         {
             return (false, "The phone drivers are not set up. Add them on the Set up page (release download or build folder).");
         }
+        log.Report($"Phone drivers: {driverStatus.Detail}");
         var outDir = Path.Combine(AppServices.WorkDirectory, "out");
         var vhdx = Path.Combine(AppServices.WorkDirectory, "s9windows.vhdx");
         Directory.CreateDirectory(AppServices.WorkDirectory);

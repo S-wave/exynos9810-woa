@@ -19,6 +19,10 @@ public sealed class ToolsetTests : IDisposable
     private ToolsetPaths Paths(string? pathVar = null) => new(
         Path.Combine(_root, "app"), Path.Combine(_root, "data"), Path.Combine(_root, "local"), Path.Combine(_root, "pf"), pathVar);
 
+    /// <summary>A UFS driver INF carrying <paramref name="version"/> the way the shipped one does.</summary>
+    private static byte[] UfsInf(string version) => System.Text.Encoding.ASCII.GetBytes(
+        $"[Version]\r\nSignature=\"$WINDOWS NT$\"\r\nDriverVer=10/28/2026,{version}\r\nCatalogFile=Exynos9810Ufs.cat\r\n");
+
     private static string Touch(string path, byte[]? content = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -271,12 +275,56 @@ public sealed class ToolsetTests : IDisposable
     [Fact]
     public async Task ReleaseDriversAreExtractedAndValidated()
     {
-        var zip = Zip(("Exynos9810Ufs/Exynos9810Ufs.inf", [1]), ("Exynos9810Ufs/Exynos9810Ufs.sys", [2]),
+        var zip = Zip(("Exynos9810Ufs/Exynos9810Ufs.inf", UfsInf("9.0.0.2")), ("Exynos9810Ufs/Exynos9810Ufs.sys", [2]),
             ("S6SY761Touch/S6SY761Touch.inf", [3]), ("S6SY761Touch/S6SY761Touch.sys", [4]));
         var m = Manager(http: Release(new() { ["drivers.zip"] = zip }));
         var status = await m.DownloadReleaseAsync(Tools.Drivers);
         Assert.Equal(ToolState.Ready, status.State);
         Assert.Equal(2, ToolsetManager.BuiltDriverPackages(m.DriversPayload).Count);
+    }
+
+    [Fact]
+    public async Task DriversFromBeforeLargerPhoneSupportAreReplaced()
+    {
+        // What an earlier installer left behind: upstream's 64 GB-only storage driver, 9.0.0.1.
+        var m = Manager(http: Release(new() { ["drivers.zip"] = Zip(
+            ("Exynos9810Ufs/Exynos9810Ufs.inf", UfsInf("9.0.0.2")), ("Exynos9810Ufs/Exynos9810Ufs.sys", [2])) }));
+        Touch(Path.Combine(m.DriversPayload, @"Exynos9810Ufs\Exynos9810Ufs.inf"), UfsInf("9.0.0.1"));
+        Touch(Path.Combine(m.DriversPayload, @"Exynos9810Ufs\Exynos9810Ufs.sys"), [1]);
+
+        var stale = m.Detect(Tools.Drivers);
+        Assert.Equal(ToolState.Missing, stale.State);
+        Assert.Contains("9.0.0.1", stale.Detail, StringComparison.Ordinal);
+        Assert.Contains("64 GB", stale.Detail, StringComparison.Ordinal);
+        Assert.Null(m.ResolvePath(Tools.Drivers));
+
+        var fresh = await m.DownloadReleaseAsync(Tools.Drivers);
+        Assert.Equal(ToolState.Ready, fresh.State);
+        Assert.Contains("9.0.0.2", fresh.Detail, StringComparison.Ordinal);
+        Assert.Equal(new Version(9, 0, 0, 2),
+            ToolsetManager.UfsDriverVersion(Path.Combine(m.DriversPayload, @"Exynos9810Ufs\Exynos9810Ufs.inf")));
+    }
+
+    [Fact]
+    public async Task AReleaseWithAnOutdatedStorageDriverIsAnError()
+    {
+        var m = Manager(http: Release(new() { ["drivers.zip"] = Zip(
+            ("Exynos9810Ufs/Exynos9810Ufs.inf", UfsInf("9.0.0.1")), ("Exynos9810Ufs/Exynos9810Ufs.sys", [2])) }));
+        var status = await m.DownloadReleaseAsync(Tools.Drivers);
+        Assert.Equal(ToolState.Error, status.State);
+        Assert.Contains("64 GB", status.Detail, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("DriverVer=10/28/2026,9.0.0.2", "9.0.0.2")]
+    [InlineData("DriverVer = 09/16/2026, 9.0.0.1 ; upstream", "9.0.0.1")]
+    [InlineData("driverver=01/01/2027,10.1.0.0", "10.1.0.0")]
+    [InlineData("DriverVer=10/28/2026", null)]
+    public void ReadsTheDriverVersionFromTheInf(string line, string? expected)
+    {
+        var inf = Touch(Path.Combine(_root, "v", Guid.NewGuid().ToString("N") + ".inf"),
+            System.Text.Encoding.ASCII.GetBytes($"[Version]\r\n{line}\r\n"));
+        Assert.Equal(expected is null ? null : Version.Parse(expected), ToolsetManager.UfsDriverVersion(inf));
     }
 
     [Fact]
@@ -514,7 +562,7 @@ public sealed class ToolsetTests : IDisposable
         var build = Path.Combine(_root, "build");
         Touch(Path.Combine(build, @"firmware\star2lte-uefi-boot.img"), BootImageBytes());
         Touch(Path.Combine(build, @"src\Exynos9810Ufs\Exynos9810Ufs.inf"));           // source only: ignored
-        Touch(Path.Combine(build, @"out\Exynos9810Ufs\Exynos9810Ufs.inf"));
+        Touch(Path.Combine(build, @"out\Exynos9810Ufs\Exynos9810Ufs.inf"), UfsInf("9.0.0.2"));
         Touch(Path.Combine(build, @"out\Exynos9810Ufs\Exynos9810Ufs.sys"));
         Touch(Path.Combine(build, @"out\S6SY761Touch\S6SY761Touch.inf"));
         Touch(Path.Combine(build, @"out\S6SY761Touch\S6SY761Touch.sys"));
@@ -546,7 +594,7 @@ public sealed class ToolsetTests : IDisposable
             var exe = id switch { "Google.PlatformTools" => @"platform-tools\adb.exe", "BenjaminDobell.Heimdall" => "heimdall.exe", _ => "zadig-2.9.exe" };
             Touch(Path.Combine(p.LocalAppData, $@"Microsoft\WinGet\Packages\{id}_src\{exe}"));
         });
-        var zip = Zip(("Exynos9810Ufs/Exynos9810Ufs.inf", [1]), ("Exynos9810Ufs/Exynos9810Ufs.sys", [2]));
+        var zip = Zip(("Exynos9810Ufs/Exynos9810Ufs.inf", UfsInf("9.0.0.2")), ("Exynos9810Ufs/Exynos9810Ufs.sys", [2]));
         var reg = new FakeRegistry();
         reg.Keys[@"SYSTEM\CurrentControlSet\Services\dg_ssudbus"] = [];
         var m = Manager(runner, reg, http: Release(new() { ["uefi.img"] = BootImageBytes(), ["drivers.zip"] = zip }), winget: winget);
