@@ -18,19 +18,29 @@
        the xHCI part itself.
 
   Everything is guarded: the boot-loader-programmed USB clocks are checked (not
-  changed), the HSI2C controller is only used if the boot loader left its timing
-  programmed, and every step reports to the BDS record ring.
+  changed), and the HSI2C controller is only used if the boot loader left its
+  timing programmed.
+
+  A standalone DXE driver, so it can be added to the released firmware image
+  (FMMT) without rebuilding its BDS. Each step is logged to the volatile, runtime
+  UEFI variable Star2LteUsbHost, which Windows can read; the BDS record ring is
+  overwritten by the storage driver once Windows starts.
 **/
 
-#include "UsbHost.h"
-
-#if STAR2LTE_USB_HOST
-
+#include <Uefi.h>
 #include <Library/BaseLib.h>
 #include <Library/IoLib.h>
 #include <Library/PrintLib.h>
 #include <Library/TimerLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Platform/Exynos9810.h>
+
+//
+// Vendor GUID of the Star2LteUsbHost log variable.
+//
+STATIC EFI_GUID  mStar2LteUsbHostLogGuid = {
+  0x3c61ef0f, 0x2a3e, 0x4f7b, { 0x9a, 0x6b, 0x85, 0x10, 0x9e, 0x81, 0x0c, 0x55 }
+};
 
 //
 // USB clocks, as left running by the boot loader (it uses USB for Download mode).
@@ -184,7 +194,8 @@
 #define MAX77705_CNFG_08_FSW_MASK      0x3u
 #define MAX77705_CNFG_08_FSW_3MHZ      0x0u
 
-STATIC STAR2LTE_USB_DEBUG_LOG  mUsbHostLog;
+STATIC CHAR8  mUsbHostLog[1024];
+STATIC UINTN  mUsbHostLogLength;
 
 STATIC
 VOID
@@ -193,14 +204,17 @@ UsbHostLogValue (
   IN UINT32       Value
   )
 {
-  CHAR8  Buffer[48];
-
-  if (mUsbHostLog == NULL) {
+  if (mUsbHostLogLength + 32 >= sizeof (mUsbHostLog)) {
     return;
   }
 
-  AsciiSPrint (Buffer, sizeof (Buffer), "\n=%a %08x", Tag, Value);
-  mUsbHostLog (Buffer);
+  mUsbHostLogLength += AsciiSPrint (
+                         mUsbHostLog + mUsbHostLogLength,
+                         sizeof (mUsbHostLog) - mUsbHostLogLength,
+                         "%a=%08x\n",
+                         Tag,
+                         Value
+                         );
 }
 
 STATIC
@@ -552,16 +566,15 @@ UsbHostEnablePhy (
   MemoryFence ();
 }
 
+STATIC
 EFI_STATUS
-Star2LteUsbHostStart (
-  IN STAR2LTE_USB_DEBUG_LOG  Log
+UsbHostStart (
+  VOID
   )
 {
   UINT32   ClockErrors;
   UINT32   Value;
   BOOLEAN  Vbus;
-
-  mUsbHostLog = Log;
 
   ClockErrors = UsbHostCheckClocks ();
   UsbHostLogValue ("UHCLK", ClockErrors);
@@ -638,4 +651,32 @@ Star2LteUsbHostStart (
   return EFI_SUCCESS;
 }
 
-#endif
+EFI_STATUS
+EFIAPI
+Star2LteUsbHostDxeEntry (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = UsbHostStart ();
+  UsbHostLogValue ("UHSTATUS", (UINT32)Status);
+
+  //
+  // Volatile and runtime-visible: readable from Windows for this boot only.
+  // Logging must never fail the boot, so its status is ignored.
+  //
+  gRT->SetVariable (
+         L"Star2LteUsbHost",
+         &mStar2LteUsbHostLogGuid,
+         EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+         mUsbHostLogLength,
+         mUsbHostLog
+         );
+
+  //
+  // Nothing stays resident: the hand-off is register state, not a service.
+  //
+  return EFI_SUCCESS;
+}

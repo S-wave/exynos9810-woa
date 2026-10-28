@@ -78,14 +78,16 @@
 //
 // Big-cluster enablement knob.
 //
-// The earlier LITTLE-CLUSTER-ONLY gate was useful for isolating the PSCI bring-up
-// path, but the current firmware stack is now expected to expose the full 4xA55 +
-// 4xM3 topology to Windows. Leave the guard in place as a fallback switch so an
-// isolation build can still be produced, but default it to 0 so the shipped image
-// advertises all eight processors.
+// Default ON: only the four A55s are advertised. The big cluster cannot be started
+// yet (PlatformBootManagerLib: CPU_ON for MPIDR 0x100 returns SUCCESS but the core
+// never runs, and a second CPU_ON hangs the SoC). The parking code only adds parking
+// mailboxes to the A55 entries; it does not clear the enable flag of the M3 entries,
+// so advertising them would make Windows issue that PSCI CPU_ON itself. The
+// released images expose four processors, matching this setting. Build with
+// -DSTAR2LTE_LITTLE_CLUSTER_ONLY=0 only for big-cluster bring-up experiments.
 //
 #ifndef STAR2LTE_LITTLE_CLUSTER_ONLY
-#define STAR2LTE_LITTLE_CLUSTER_ONLY  0
+#define STAR2LTE_LITTLE_CLUSTER_ONLY  1
 #endif
 
 #if STAR2LTE_LITTLE_CLUSTER_ONLY

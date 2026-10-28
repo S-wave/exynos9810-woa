@@ -26,8 +26,6 @@
 .PARAMETER UsbDebugMode
   Off preserves the ext209 control. Snapshot enables read-only CMU/Q-channel
   telemetry. Hid selects the native polling transport profile.
-.PARAMETER UsbHost  Experimental: leave the DWC3 in xHCI host mode with MAX77705 VBUS and
-                  publish it to Windows as ACPI USB0 (PNP0D10). Exclusive with -UsbDebugMode Hid.
 .PARAMETER Clean    Run `cleanall` instead of building.
 
 .EXAMPLE
@@ -41,7 +39,6 @@ param(
   [string]$Toolchain = "CLANGPDB",
   [ValidateSet("Off", "Snapshot", "Hid")] [string]$UsbDebugMode = "Off",
   [ValidateRange(0, 4)] [int]$RamStage = 0,
-  [switch]$UsbHost,
   [switch]$Clean
 )
 $ErrorActionPreference = "Stop"
@@ -122,8 +119,7 @@ $buildArgs = @(
   "-p", $dsc,
   "-b", $Target,
   "-D", "STAR2LTE_USB_DEBUG_MODE=$usbDebugModeValue",
-  "-D", "STAR2LTE_RAM_STAGE=$RamStage",
-  "-D", "STAR2LTE_USB_HOST=$([int][bool]$UsbHost)"
+  "-D", "STAR2LTE_RAM_STAGE=$RamStage"
 )
 if ($Module) { $buildArgs += @("-m", $Module) }
 if ($Clean)  { $buildArgs += "cleanall" }

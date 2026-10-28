@@ -47,3 +47,8 @@ TestResults/
 
 # Private scrub patches (contain the removed text); see tools/release/import_sources.py
 /.release-patches/
+
+# bootshim build outputs (pack-uefi.ps1)
+firmware/tools/bootshim/bootshim.o
+firmware/tools/bootshim/bootshim.elf
+firmware/tools/bootshim/bootshim.bin

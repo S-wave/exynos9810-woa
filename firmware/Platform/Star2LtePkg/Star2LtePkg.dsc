@@ -27,14 +27,6 @@
 !endif
 
 #
-# USB host hand-off (UsbHost.c + DSDT USB0): DWC3 left in xHCI host mode with
-# MAX77705 VBUS for the Windows inbox xHCI driver. Experimental until validated.
-#
-!ifndef STAR2LTE_USB_HOST
-  DEFINE STAR2LTE_USB_HOST = 0
-!endif
-
-#
 # ext210: staged extra-RAM publication at SEC/PEI (see MemoryInitPeiLib.c).
 #   0 = 711 MiB baseline, 3 = the deployed 1,357 MiB, 4 = adds the 4 GiB bank.
 #
@@ -53,11 +45,8 @@
   CLANGPDB:*_*_*_DLINK_FLAGS     = /ALIGN:0x1000
   # LLVM 23 added -Wunused-but-set-global; the diagnostic globals the BDS keeps for
   # debugging trip it under -Werror. Older clang ignores the flag (-Wno-unknown-warning-option).
-  CLANGPDB:*_*_AARCH64_CC_FLAGS  = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE) -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST) -Wno-unused-but-set-global
-  CLANGDWARF:*_*_AARCH64_CC_FLAGS = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE) -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST) -Wno-unused-but-set-global
-  # The DSDT goes through the C preprocessor too: USB0 exists only in USB-host builds.
-  CLANGPDB:*_*_*_ASLPP_FLAGS     = -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST)
-  CLANGDWARF:*_*_*_ASLPP_FLAGS   = -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST)
+  CLANGPDB:*_*_AARCH64_CC_FLAGS  = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE) -Wno-unused-but-set-global
+  CLANGDWARF:*_*_AARCH64_CC_FLAGS = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE) -Wno-unused-but-set-global
 
 ################################################################################
 #
@@ -403,6 +392,11 @@
   # ExtScsiPassThru; ScsiBus/ScsiDisk expose BlockIo; Partition/DiskIo/Fat expose
   # the EFI System Partition so BDS can find \EFI\Microsoft\Boot\bootmgfw.efi.
   Platform/Star2LtePkg/Drivers/Star2LteUfsHcDxe/Star2LteUfsHcDxe.inf
+  #
+  # USB host hand-off. Built here but not in the FDF: it is added, with its SSDT
+  # (UsbHost.asl), to the released image by tools/add-usb-host.ps1.
+  #
+  Platform/Star2LtePkg/Drivers/Star2LteUsbHostDxe/Star2LteUsbHostDxe.inf
   MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruDxe.inf
   MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
   MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf

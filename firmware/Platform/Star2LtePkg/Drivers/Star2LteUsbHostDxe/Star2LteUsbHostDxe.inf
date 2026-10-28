@@ -1,0 +1,33 @@
+## @file
+#  USB host hand-off: leaves the DWC3 in xHCI host mode, with MAX77705 VBUS, for
+#  the Windows inbox xHCI driver (ACPI USB0, PNP0D10, published by UsbHost.asl).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = Star2LteUsbHostDxe
+  FILE_GUID                      = 11111111-2222-3333-4444-555555555550
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = Star2LteUsbHostDxeEntry
+
+[Sources]
+  UsbHost.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Exynos9810Pkg/Exynos9810Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  IoLib
+  PrintLib
+  TimerLib
+  UefiDriverEntryPoint
+  UefiRuntimeServicesTableLib
+
+[Depex]
+  gEfiVariableArchProtocolGuid AND gEfiVariableWriteArchProtocolGuid
