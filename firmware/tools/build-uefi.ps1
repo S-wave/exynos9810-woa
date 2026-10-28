@@ -11,6 +11,12 @@
   The stock BaseTools `build` wrapper has a stale hardcoded path on this machine,
   so we call build.py directly with PYTHONPATH set.
 
+  EDK2: the platform matches tianocore/edk2 master between 2026-05-28 (CpuDxe no
+  longer needs DefaultExceptionHandlerLib) and 2026-07-20 (PartitionDxe starts
+  needing GptLib); no stable tag fits. Commit 2938b830f6 (2026-07-20) builds.
+  Check it out in firmware\edk2 with the brotli, libfdt, mipisyst and libspdm
+  submodules, and build BaseTools once (nmake in a VS x86 prompt).
+
 .PARAMETER Module
   Optional single module INF (workspace-relative) to build in isolation, e.g.
   Silicon\Exynos9810Pkg\Library\Exynos9810SerialPortLib\Exynos9810SerialPortLib.inf
@@ -55,6 +61,10 @@ $env:BASE_TOOLS_PATH = $env:EDK_TOOLS_PATH
 $env:PACKAGES_PATH   = "$edk2;$ws"
 $env:CLANG_BIN       = $llvm
 $env:CLANGDWARF_BIN  = $llvm
+# tools_def prepends ENV(CLANGPDB_DLL) to PATH for every tool. Left unset, an
+# unexpanded placeholder lands at the front of PATH and cmd can no longer find
+# make or the Trim.bat wrapper ("'Trim' is not recognized").
+$env:CLANGPDB_DLL    = $llvm.TrimEnd('\')
 $env:PYTHON_COMMAND  = "python"   # BinWrappers\*.bat (Trim, GenFds, ...) need this
 $env:PYTHONPATH      = Join-Path $edk2 "BaseTools\Source\Python"
 # PATH needs BOTH: Bin\Win32 (compiled GenFfs/GenFv/...) AND BinWrappers\WindowsLike
