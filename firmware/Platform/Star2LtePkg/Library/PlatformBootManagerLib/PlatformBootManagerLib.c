@@ -55,6 +55,7 @@
 #include <IndustryStandard/Acpi63.h>
 #include <IndustryStandard/PeImage.h>
 #include "UsbDebug.h"
+#include "UsbHost.h"
 
 //
 // Windows Boot Manager path on the EFI System Partition.
@@ -9925,6 +9926,9 @@ PlatformBootManagerAfterConsole (
 #endif
 #if STAR2LTE_USB_DEBUG_MODE == STAR2LTE_USB_DEBUG_HID
   Star2LteUsbDebugStart (BdsPramStr);
+#endif
+#if STAR2LTE_USB_HOST
+  Star2LteUsbHostStart (BdsPramStr);
 #endif
   Star2LtePublishSecureBootOffVariables ();
   mStar2LteTraceSetVariableEnabled = TRUE;

@@ -27,6 +27,14 @@
 !endif
 
 #
+# USB host hand-off (UsbHost.c + DSDT USB0): DWC3 left in xHCI host mode with
+# MAX77705 VBUS for the Windows inbox xHCI driver. Experimental until validated.
+#
+!ifndef STAR2LTE_USB_HOST
+  DEFINE STAR2LTE_USB_HOST = 0
+!endif
+
+#
 # ext210: staged extra-RAM publication at SEC/PEI (see MemoryInitPeiLib.c).
 #   0 = 711 MiB baseline, 3 = the deployed 1,357 MiB, 4 = adds the 4 GiB bank.
 #
@@ -43,8 +51,11 @@
   # prologue faulted). Matches ArmVirtPkg/ArmVirt.dsc.inc.
   GCC:*_*_AARCH64_DLINK_FLAGS    = -z common-page-size=0x1000
   CLANGPDB:*_*_*_DLINK_FLAGS     = /ALIGN:0x1000
-  CLANGPDB:*_*_AARCH64_CC_FLAGS  = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE)
-  CLANGDWARF:*_*_AARCH64_CC_FLAGS = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE)
+  CLANGPDB:*_*_AARCH64_CC_FLAGS  = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE) -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST)
+  CLANGDWARF:*_*_AARCH64_CC_FLAGS = -DSTAR2LTE_USB_DEBUG_MODE=$(STAR2LTE_USB_DEBUG_MODE) -DSTAR2LTE_RAM_STAGE=$(STAR2LTE_RAM_STAGE) -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST)
+  # The DSDT goes through the C preprocessor too: USB0 exists only in USB-host builds.
+  CLANGPDB:*_*_*_ASLPP_FLAGS     = -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST)
+  CLANGDWARF:*_*_*_ASLPP_FLAGS   = -DSTAR2LTE_USB_HOST=$(STAR2LTE_USB_HOST)
 
 ################################################################################
 #

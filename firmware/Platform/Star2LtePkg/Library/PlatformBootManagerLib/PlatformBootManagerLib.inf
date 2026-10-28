@@ -16,6 +16,8 @@
   UsbDebug.c
   UsbDebugHid.c
   UsbDebug.h
+  UsbHost.c
+  UsbHost.h
 
 [Packages]
   MdePkg/MdePkg.dec
