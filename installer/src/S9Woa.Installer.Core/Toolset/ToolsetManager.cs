@@ -218,15 +218,29 @@ public sealed class ToolsetManager
                     (Path.Combine(Paths.BundledPayloadDirectory, "uefi.img"), BootImage.BootPartitionBytes))
                     ?? ToolStatus.Missing("Download it from the project release, or choose your build folder.");
             case Tools.Drivers:
+                ToolStatus? outdated = null;
                 foreach (var dir in new[] { DriversPayload, Path.Combine(Paths.BundledPayloadDirectory, "drivers") })
                 {
                     var packages = BuiltDriverPackages(dir);
-                    if (packages.Any(p => File.Exists(Path.Combine(p, UfsInf))))
+                    var ufs = packages.FirstOrDefault(p => File.Exists(Path.Combine(p, UfsInf)));
+                    if (ufs is null)
                     {
-                        return ToolStatus.Ready(dir, $"{packages.Count} driver package(s) in {dir}");
+                        continue;
                     }
+                    // A package downloaded by an earlier installer stays on disk; one that predates
+                    // 128/256 GB support would build a Windows image that cannot see a larger phone's
+                    // disk (INACCESSIBLE_BOOT_DEVICE), so it is not good enough to be "ready".
+                    var version = UfsDriverVersion(Path.Combine(ufs, UfsInf));
+                    if (version is null || version < MinimumUfsDriverVersion)
+                    {
+                        outdated ??= ToolStatus.Missing(
+                            $"The storage driver in {dir} is version {version?.ToString() ?? "unknown"}, which only supports 64 GB phones. "
+                            + $"Download the drivers again (version {MinimumUfsDriverVersion} or newer is needed).");
+                        continue;
+                    }
+                    return ToolStatus.Ready(dir, $"{packages.Count} driver package(s) in {dir}, storage driver {version}");
                 }
-                return ToolStatus.Missing("Download them from the project release, or choose your build folder.");
+                return outdated ?? ToolStatus.Missing("Download them from the project release, or choose your build folder.");
             default:
                 throw new ArgumentOutOfRangeException(nameof(id));
         }
@@ -431,6 +445,27 @@ public sealed class ToolsetManager
             {
                 return ToolStatus.Ready(file, BootImage.Describe(file));
             }
+        }
+        return null;
+    }
+
+    /// <summary>The first UFS storage driver that supports 128 GB and 256 GB phones.</summary>
+    public static readonly Version MinimumUfsDriverVersion = new(9, 0, 0, 2);
+
+    /// <summary>The version in an INF's <c>DriverVer=date,version</c> line, or null if it has none.</summary>
+    internal static Version? UfsDriverVersion(string infPath)
+    {
+        foreach (var line in File.ReadLines(infPath))
+        {
+            var text = line.Trim();
+            var eq = text.IndexOf('=');
+            if (eq < 0 || !text[..eq].Trim().Equals("DriverVer", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var value = text[(eq + 1)..].Split(';')[0];
+            var comma = value.IndexOf(',');
+            return comma >= 0 && Version.TryParse(value[(comma + 1)..].Trim(), out var v) ? v : null;
         }
         return null;
     }
@@ -729,7 +764,7 @@ public sealed class ToolsetManager
                 var status = Detect(id);
                 return status.State == ToolState.Ready
                     ? status
-                    : new ToolStatus(ToolState.Error, $"Release drivers.zip does not contain a built {UfsInf} package.");
+                    : new ToolStatus(ToolState.Error, $"Release {release.Tag} drivers.zip is not usable: {status.Detail}");
             }
             default:
                 throw new InvalidOperationException($"{Tools.Get(id).Name} is not published in releases.");
